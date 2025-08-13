@@ -18,6 +18,69 @@ class TimeSheetGenerator:
         """Initialize the TimeSheetGenerator."""
         pass
 
+    def _parse_leave_days(self, leave_days_str: str) -> List[int]:
+        """
+        Parse comma-separated leave days string into list of integers.
+
+        Args:
+            leave_days_str: Comma-separated string of day numbers (e.g., "1,15,30")
+
+        Returns:
+            List of day numbers as integers
+
+        Raises:
+            ValueError: If the string format is invalid or contains non-numeric values
+        """
+        if not leave_days_str.strip():
+            return []
+        
+        try:
+            days = [int(day.strip()) for day in leave_days_str.split(',')]
+            # Remove duplicates while preserving order
+            seen = set()
+            unique_days = []
+            for day in days:
+                if day not in seen:
+                    seen.add(day)
+                    unique_days.append(day)
+            return unique_days
+        except ValueError as e:
+            raise ValueError(f"Invalid leave days format: '{leave_days_str}'. Must be comma-separated integers.") from e
+
+    def _validate_leave_days(self, leave_days: List[int], month: int, year: int) -> None:
+        """
+        Validate that leave days are valid for the given month and year.
+
+        Args:
+            leave_days: List of day numbers
+            month: Month number (1-12)
+            year: Year
+
+        Raises:
+            ValueError: If any leave day is invalid
+        """
+        if not leave_days:
+            return
+
+        # Get the number of days in the month
+        days_in_month = calendar.monthrange(year, month)[1]
+        
+        # Get business days for the month
+        business_days = self._calculate_business_days(month, year)
+        
+        for day in leave_days:
+            # Check if day is within month range
+            if day < 1 or day > days_in_month:
+                raise ValueError(f"Leave day {day} is not valid for {calendar.month_name[month]} {year} (1-{days_in_month})")
+            
+            # Check if day is a business day
+            if day not in business_days:
+                day_of_week = calendar.weekday(year, month, day)
+                if day_of_week >= 5:  # Saturday (5) or Sunday (6)
+                    raise ValueError(f"Leave day {day} falls on a weekend and cannot be taken as leave")
+                else:
+                    raise ValueError(f"Leave day {day} is not a business day in {calendar.month_name[month]} {year}")
+
     def _calculate_business_days(self, month: int, year: int) -> List[int]:
         """
         Calculate the business days (weekdays) in the given month.
@@ -149,6 +212,7 @@ class TimeSheetGenerator:
         annual_leave_taken: int,
         month: int,
         year: Optional[int] = None,
+        leave_days: Optional[List[int]] = None,
     ) -> List[Tuple[str, float]]:
         """
         Generate a time sheet distributing working hours across business days.
@@ -159,6 +223,7 @@ class TimeSheetGenerator:
             annual_leave_taken: Number of annual leave days taken
             month: Month number (1-12)
             year: Year (defaults to current year if not provided)
+            leave_days: Optional list of specific days when leave was taken
 
         Returns:
             List of tuples with date strings and hours worked
@@ -176,10 +241,32 @@ class TimeSheetGenerator:
         # Calculate business days in the month
         business_days = self._calculate_business_days(month, year)
 
-        # Validate and calculate working days
-        working_days = self._validate_working_days(
-            len(business_days), annual_leave_taken
-        )
+        # Handle leave days validation and filtering
+        if leave_days is not None:
+            # Validate the specific leave days
+            self._validate_leave_days(leave_days, month, year)
+            
+            # Validate that leave count matches the number of leave days
+            if len(leave_days) != annual_leave_taken:
+                raise ValueError(
+                    f"Leave count ({annual_leave_taken}) does not match the number of leave days "
+                    f"provided ({len(leave_days)}). Expected {annual_leave_taken} days."
+                )
+            
+            # Filter out the specific leave days from business days
+            working_business_days = [day for day in business_days if day not in leave_days]
+        else:
+            # Use the traditional approach: remove the last N business days
+            working_business_days = business_days[:-annual_leave_taken] if annual_leave_taken > 0 else business_days
+
+        working_days = len(working_business_days)
+
+        # Validate there are working days available
+        if working_days <= 0:
+            raise ValueError(
+                f"No working days available after subtracting {annual_leave_taken} "
+                f"annual leave days from {len(business_days)} business days"
+            )
 
         # Validate hours can be distributed
         self._validate_hours_distribution(
@@ -191,7 +278,7 @@ class TimeSheetGenerator:
         remaining_hours = hours_worked
         days_left = working_days
 
-        for day in business_days:
+        for day in working_business_days:
             # Stop if we've already allocated all working days
             if days_left <= 0:
                 break
@@ -221,4 +308,4 @@ class TimeSheetGenerator:
         total_allocated = sum(hours for _, hours in result)
         self._verify_total_allocation(total_allocated, hours_worked)
 
-        return result 
+        return result

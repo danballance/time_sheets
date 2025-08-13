@@ -216,4 +216,177 @@ def test_output_consistency(generator):
 def test_business_days_calculation(generator):
     # February 2024 has 21 business days (excluding weekends)
     business_days = generator._calculate_business_days(2, 2024)
-    assert len(business_days) == 21 
+    assert len(business_days) == 21
+
+
+# Tests for new leave-days functionality
+
+def test_parse_leave_days_valid(generator):
+    """Test parsing valid leave days strings."""
+    # Basic comma-separated list
+    result = generator._parse_leave_days("1,15,30")
+    assert result == [1, 15, 30]
+    
+    # With spaces
+    result = generator._parse_leave_days("1, 15, 30")
+    assert result == [1, 15, 30]
+    
+    # Single day
+    result = generator._parse_leave_days("15")
+    assert result == [15]
+    
+    # Empty string
+    result = generator._parse_leave_days("")
+    assert result == []
+    
+    # Duplicates should be removed
+    result = generator._parse_leave_days("1,15,1,30")
+    assert result == [1, 15, 30]
+
+
+def test_parse_leave_days_invalid(generator):
+    """Test parsing invalid leave days strings."""
+    # Non-numeric values
+    with pytest.raises(ValueError) as excinfo:
+        generator._parse_leave_days("1,abc,15")
+    assert "Invalid leave days format" in str(excinfo.value)
+    
+    # Mixed valid/invalid
+    with pytest.raises(ValueError) as excinfo:
+        generator._parse_leave_days("1,15.5,30")
+    assert "Invalid leave days format" in str(excinfo.value)
+
+
+def test_validate_leave_days_valid(generator):
+    """Test validation of valid leave days."""
+    # January 2024: business days include 1, 2, 3, 4, 5, 8, 9, etc.
+    # This should not raise an exception
+    generator._validate_leave_days([1, 15, 30], 1, 2024)
+
+
+def test_validate_leave_days_out_of_range(generator):
+    """Test validation fails for days outside month range."""
+    # Day 32 doesn't exist in January
+    with pytest.raises(ValueError) as excinfo:
+        generator._validate_leave_days([1, 32], 1, 2024)
+    assert "Leave day 32 is not valid for January 2024" in str(excinfo.value)
+    
+    # Day 0 is invalid
+    with pytest.raises(ValueError) as excinfo:
+        generator._validate_leave_days([0, 15], 1, 2024)
+    assert "Leave day 0 is not valid for January 2024" in str(excinfo.value)
+
+
+def test_validate_leave_days_weekend(generator):
+    """Test validation fails for weekend days."""
+    # January 6, 2024 is a Saturday
+    with pytest.raises(ValueError) as excinfo:
+        generator._validate_leave_days([6], 1, 2024)
+    assert "Leave day 6 falls on a weekend" in str(excinfo.value)
+    
+    # January 7, 2024 is a Sunday
+    with pytest.raises(ValueError) as excinfo:
+        generator._validate_leave_days([7], 1, 2024)
+    assert "Leave day 7 falls on a weekend" in str(excinfo.value)
+
+
+def test_generate_with_specific_leave_days(generator):
+    """Test time sheet generation with specific leave days."""
+    year = 2024
+    month = 1  # January
+    
+    # January 2024 business days: 1,2,3,4,5,8,9,10,11,12,15,16,17,18,19,22,23,24,25,26,29,30,31
+    # Taking leave on days 1, 15, 30 (3 days)
+    leave_days = [1, 15, 30]
+    
+    result = generator.generate_time_sheet(
+        40, 8, 3, month, year, leave_days
+    )
+    
+    # Check that leave days are not in the result
+    result_dates = [date for date, _ in result]
+    assert "2024-01-01" not in result_dates
+    assert "2024-01-15" not in result_dates
+    assert "2024-01-30" not in result_dates
+    
+    # Check total hours
+    total_hours = sum(hours for _, hours in result)
+    assert abs(total_hours - 40) < 0.01
+    
+    # Should have 20 working days (23 business days - 3 leave days)
+    assert len(result) == 20
+
+
+def test_generate_with_leave_count_mismatch(generator):
+    """Test validation fails when leave count doesn't match leave days."""
+    with pytest.raises(ValueError) as excinfo:
+        generator.generate_time_sheet(
+            40, 8, 2, 1, 2024, [1, 15, 30]  # 2 leave days but 3 specific days
+        )
+    assert "Leave count (2) does not match the number of leave days provided (3)" in str(excinfo.value)
+
+
+def test_generate_backward_compatibility(generator):
+    """Test that existing functionality still works without leave_days."""
+    # This should work exactly as before
+    result_old = generator.generate_time_sheet(40, 8, 3, 1, 2024)
+    result_new = generator.generate_time_sheet(40, 8, 3, 1, 2024, None)
+    
+    # Results should be identical
+    assert result_old == result_new
+
+
+def test_generate_with_empty_leave_days(generator):
+    """Test generation with empty leave days list."""
+    result = generator.generate_time_sheet(
+        40, 8, 0, 1, 2024, []
+    )
+    
+    # Should work like no leave days
+    total_hours = sum(hours for _, hours in result)
+    assert abs(total_hours - 40) < 0.01
+    
+    # Should have all business days in January 2024 (23 days)
+    assert len(result) == 23
+
+
+def test_leave_days_order_preservation(generator):
+    """Test that the order of working days is preserved correctly."""
+    year = 2024
+    month = 2  # February
+    
+    # Take leave on days 5, 14, 20 (scattered throughout month, all business days)
+    # Feb 5 = Monday, Feb 14 = Wednesday, Feb 20 = Tuesday
+    leave_days = [5, 14, 20]
+    
+    result = generator.generate_time_sheet(
+        30, 8, 3, month, year, leave_days
+    )
+    
+    # Check that dates are in chronological order
+    dates = [date for date, _ in result]
+    assert dates == sorted(dates)
+    
+    # Check that leave days are excluded
+    assert "2024-02-05" not in dates
+    assert "2024-02-14" not in dates  
+    assert "2024-02-20" not in dates
+
+
+def test_leave_days_with_maximum_hours_constraint(generator):
+    """Test leave days functionality with maximum hours constraint."""
+    year = 2024
+    month = 3  # March
+    
+    # March 2024 has 21 business days
+    # Take 10 days of leave, leaving 11 working days
+    # Try to fit 100 hours in 11 days with max 8 hours per day
+    # This should fail (11 * 8 = 88 < 100)
+    
+    leave_days = [1, 4, 5, 6, 7, 8, 11, 12, 13, 14]  # 10 business days
+    
+    with pytest.raises(ValueError) as excinfo:
+        generator.generate_time_sheet(
+            100, 8, 10, month, year, leave_days
+        )
+    assert "Cannot distribute 100 hours" in str(excinfo.value)

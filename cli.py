@@ -27,8 +27,12 @@ def main():
     parser.add_argument(
         "--leave",
         type=int,
-        required=True,
         help="Number of annual leave days taken (including bank holidays)"
+    )
+    parser.add_argument(
+        "--leave-days",
+        type=str,
+        help="Comma-separated list of specific days when leave was taken (e.g., '1,10,15')"
     )
     parser.add_argument(
         "--month",
@@ -49,13 +53,36 @@ def main():
         # Create a TimeSheetGenerator instance
         generator = TimeSheetGenerator()
         
+        # Handle leave days parameter validation
+        leave_days_list = None
+        leave_count = args.leave
+        
+        if args.leave_days is not None:
+            # Parse the leave days string (including empty strings)
+            leave_days_list = generator._parse_leave_days(args.leave_days)
+            
+            if args.leave is not None:
+                # Both --leave and --leave-days provided: validate they match
+                if len(leave_days_list) != args.leave:
+                    raise ValueError(
+                        f"Leave count ({args.leave}) does not match the number of leave days "
+                        f"provided ({len(leave_days_list)}). Expected {args.leave} days."
+                    )
+            else:
+                # Only --leave-days provided: calculate leave count
+                leave_count = len(leave_days_list)
+        elif args.leave is None:
+            # Neither parameter provided
+            raise ValueError("Either --leave or --leave-days must be provided")
+        
         # Generate the time sheet
         time_sheet = generator.generate_time_sheet(
             args.hours,
             args.max_hours,
-            args.leave,
+            leave_count,
             args.month,
-            args.year
+            args.year,
+            leave_days_list
         )
         
         # Print the results
@@ -74,4 +101,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main() 
+    main()
